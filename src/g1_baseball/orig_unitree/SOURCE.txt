@@ -1,0 +1,5 @@
+Unitree Robotics unitree_ros
+https://github.com/unitreerobotics/unitree_ros
+Commit: 157ff950351e5f535e03c5d85a16b7d594b3dbcc
+Source: robots/g1_description/g1_29dof.urdf and referenced meshes
+Original URDF preserved here; mesh files in ../meshes.
