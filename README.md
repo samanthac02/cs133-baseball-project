@@ -7,8 +7,12 @@
 
 ## Build
 cd ~/robotws/cs133-baseball-project
+
 source /opt/ros/jazzy/setup.bash
+
 colcon build --symlink-install
+
 source install/setup.bash
+
 ros2 launch utils viewurdf.launch.py urdf:="$PWD/src/g1_baseball/urdf/g1_baseball.urdf"
 
