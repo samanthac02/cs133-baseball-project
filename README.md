@@ -1,7 +1,7 @@
 ## Progress
-1. Downloaded the official G1 model (located in orig_unitree_ros) from https://github.com/unitreerobotics/unitree_ros/tree/master/robots/g1_description
+1. Downloaded the official G1 model (located in src/g1_baseball/orig_unitree) from https://github.com/unitreerobotics/unitree_ros/tree/master/robots/g1_description
 
-2. CADed a baseball bat in Fusion and exported it as STL into meshes directory
+2. CADed a baseball bat in Fusion and exported it as STL into src/g1_baseball/meshes directory
 
 3. Connected the bat to the G1's right hand in the URDF (with a small offset that I determined by visually looking at the viewer)
 
