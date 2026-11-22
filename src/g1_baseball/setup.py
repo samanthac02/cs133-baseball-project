@@ -11,6 +11,7 @@ otherfiles = [
         ('share/' + package_name + '/meshes', glob('meshes/*')),
         ('share/' + package_name + '/urdf',   glob('urdf/*')),
         ('share/' + package_name + '/orig_unitree', glob('orig_unitree/*')),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
 ]
 
 
@@ -31,6 +32,7 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
+            'trajectory = g1_baseball.trajectory:main',
         ],
     },
 )
