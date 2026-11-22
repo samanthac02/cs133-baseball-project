@@ -99,38 +99,116 @@ class TrajectoryNode(Node):
         }
 
         # Define the initial joint configuration.
+        # Initial configuration of the full robot.
         self.q0 = np.zeros(self.N)
+        self.qc = self.q0.copy()
 
-        # Define the ready configuration.
-        # Angles below are in DEGREES, converted to radians.
+        # Active joints in the pelvis-to-bat kinematic chain.
+        # The order must match the order along the chain.
+        self.activenames = [
+            'waist_yaw_joint',
+            'waist_roll_joint',
+            'waist_pitch_joint',
+
+            'right_shoulder_pitch_joint',
+            'right_shoulder_roll_joint',
+            'right_shoulder_yaw_joint',
+            'right_elbow_joint',
+            'right_wrist_roll_joint',
+            'right_wrist_pitch_joint',
+            'right_wrist_yaw_joint',
+        ]
+
+        self.activeindex = np.array([
+            self.jointindex[name] for name in self.activenames
+        ])
+
+        self.chain = KinematicChain(
+            self, 'pelvis', 'baseball_bat', self.activenames
+        )
+
+        # Ready configuration.
+        #
+        # This pose was computed using the supplied URDF so that the
+        # bat link's local z axis is approximately horizontal, while
+        # the right wrist yaw starts at 90 degrees.
+        #
+        # Active joint order:
+        # waist yaw/roll/pitch,
+        # shoulder pitch/roll/yaw,
+        # elbow,
+        # wrist roll/pitch/yaw.
         self.qready = self.q0.copy()
 
-        ready_angles = {
-            'waist_yaw_joint':            -15.0,
-            'right_shoulder_pitch_joint': -30.0,
-            'right_shoulder_roll_joint':  -25.0,
-            'right_shoulder_yaw_joint':   -15.0,
-            'right_elbow_joint':           60.0,
-        }
+        self.qready[self.activeindex] = np.radians(np.array([
+            -45.000000,
+            7.283509,
+            8.548961,
 
-        for jointname, angle in ready_angles.items():
-            i = self.jointindex[jointname]
-            self.qready[i] = np.radians(angle)
+            -88.073999,
+            -19.888281,
+            19.210660,
+            119.492473,
+            -30.540658,
+            30.441813,
+            90.000000,
+        ]))
 
-        # Define the follow-through configuration.
-        self.qfollow = self.qready.copy()
+        # Compute the matched starting pose for the Cartesian swing.
+        self.qa_ready = self.qready[self.activeindex].copy()
 
-        follow_angles = {
-            'waist_yaw_joint':             15.0,
-            'right_shoulder_yaw_joint':    15.0,
-            'right_elbow_joint':           35.0,
-        }
+        self.pstart, self.Rstart, _, _ = self.chain.fkin(
+            self.qa_ready
+        )
 
-        for jointname, angle in follow_angles.items():
-            i = self.jointindex[jointname]
-            self.qfollow[i] = np.radians(angle)
+        # Assumed long axis of the bat, expressed in its own frame.
+        self.bat_axis = np.array([0.0, 0.0, 1.0])
 
-        # Check the specified poses against the URDF joint limits.
+        # Verify the ready pose is horizontal under that assumption.
+        bat_direction = self.Rstart @ self.bat_axis
+
+        if abs(bat_direction[2]) > 0.02:
+            raise ValueError(
+                "Ready pose is not horizontal for this robot description. "
+                "Check the bat attachment rotation and bat-axis definition."
+            )
+
+        # Center of the horizontal swing arc, expressed in pelvis.
+        # The arc rotates around the pelvis z axis at grip height.
+        self.center = np.array([
+            0.0, 0.0, self.pstart[2]
+        ])
+
+        self.radius = self.pstart - self.center
+
+        # Swing parameters.
+        self.swing_angle = np.radians(100.0)
+
+        # A small downward dip in the middle of the swing.
+        self.swing_drop = 0.025
+
+        # Roll the tool orientation around the bat's own long axis.
+        # Negative direction was selected for this starting pose.
+        self.roll_angle = np.radians(-90.0)
+
+        # Secondary preference for the actual wrist-roll joint.
+        # This is a preference, not an enforced joint trajectory.
+        self.wrist_roll_change = np.radians(30.0)
+
+        # Damped inverse and feedback parameters.
+        self.lam = 20.0
+        self.gamma = 0.05
+        self.lam_secondary = 2.0
+
+        # Scale translational rows before computing the damped inverse.
+        self.Wtask = np.diag([
+            1/0.4, 1/0.4, 1/0.4, 1.0, 1.0, 1.0
+        ])
+
+        # Joint limits for checking the commanded configuration.
+        self.qmin = np.full(self.N, -np.inf)
+        self.qmax = np.full(self.N,  np.inf)
+
         for joint in joints:
             if joint.get('type') == 'continuous':
                 continue
@@ -138,20 +216,23 @@ class TrajectoryNode(Node):
             i = self.jointindex[joint.get('name')]
             limit = joint.find('limit')
 
-            lower = float(limit.get('lower'))
-            upper = float(limit.get('upper'))
+            self.qmin[i] = float(limit.get('lower'))
+            self.qmax[i] = float(limit.get('upper'))
 
-            for q in (self.q0, self.qready, self.qfollow):
-                if not lower <= q[i] <= upper:
-                    raise ValueError(
-                        f"Pose exceeds limits for {joint.get('name')}"
-                    )
+        for q in (self.q0, self.qready):
+            if np.any(q < self.qmin) or np.any(q > self.qmax):
+                raise ValueError("Initial or ready pose exceeds joint limits")
 
-        # Define the duration of each phase.
+        # Phase durations.
         self.Tready = 3.0
-        self.Tswing = 4.0
-        self.Treturn = 3.0
+        self.Tpause = 1.0
+        self.Tswing = 6.0
+        self.Tfinish = 1.0
+        self.Treturn = 4.0
         self.Thold = 1.0
+
+        # Save the actual IK endpoint before starting the joint return.
+        self.qreturn = None
 
         ##############################################################
         # SETUP THE LOGISTICS OF THE NODE.
@@ -205,22 +286,23 @@ class TrajectoryNode(Node):
 
         ##############################################################
         # COMPUTE THE TRAJECTORY AT THIS TIME INSTANCE.
-
+        
         # Define the phase boundaries.
         t1 = self.Tready
-        t2 = t1 + self.Tswing
-        t3 = t2 + self.Treturn
-        t4 = t3 + self.Thold
+        t2 = t1 + self.Tpause
+        t3 = t2 + self.Tswing
+        t4 = t3 + self.Tfinish
+        t5 = t4 + self.Treturn
+        t6 = t5 + self.Thold
 
-        # Stop after the final hold.
-        if self.t > t4:
+        if self.t > t6:
             if not self.future.done():
                 self.future.set_result("Trajectory has ended")
             return
 
-        # Decide which phase we are in.
         if self.t < t1:
-            # Move from the initial pose to the ready pose.
+            # JOINT MOTION:
+            # Move from the initial configuration to the ready pose.
             qc, qcdot = goto(
                 self.t,
                 self.Tready,
@@ -229,27 +311,193 @@ class TrajectoryNode(Node):
             )
 
         elif self.t < t2:
-            # Perform the demonstration sweep.
-            qc, qcdot = goto(
-                self.t - t1,
-                self.Tswing,
-                self.qready,
-                self.qfollow
-            )
+            # Hold the ready pose before swinging.
+            qc = self.qready.copy()
+            qcdot = np.zeros(self.N)
 
         elif self.t < t3:
-            # Return to the initial pose.
+            # CARTESIAN MOTION:
+            # Follow the desired bat pose using damped IK.
+            t = self.t - t2
+
+            # Smooth swing progress from 0 to 1.
+            s, sdot = goto(
+                t, self.Tswing, 0.0, 1.0
+            )
+
+            theta = self.swing_angle * s
+            thetadot = self.swing_angle * sdot
+
+            Rz = RotAxis(
+                np.array([0.0, 0.0, 1.0]),
+                theta
+            )
+
+            # Desired grip position:
+            # a horizontal arc with a small downward dip.
+            radial = Rz @ self.radius
+
+            pd = (
+                self.center
+                + radial
+                + np.array([
+                    0.0,
+                    0.0,
+                    -self.swing_drop * sin(pi*s)
+                ])
+            )
+
+            vd = (
+                thetadot * np.cross(
+                    np.array([0.0, 0.0, 1.0]),
+                    radial
+                )
+                + np.array([
+                    0.0,
+                    0.0,
+                    -self.swing_drop * pi * cos(pi*s) * sdot
+                ])
+            )
+
+            # Begin the rollover during the final 30% of the swing.
+            troll = t - 0.70 * self.Tswing
+            Troll = 0.30 * self.Tswing
+
+            if troll <= 0.0:
+                sroll = 0.0
+                srolldot = 0.0
+            else:
+                sroll, srolldot = goto(
+                    troll, Troll, 0.0, 1.0
+                )
+
+            phi = self.roll_angle * sroll
+            phidot = self.roll_angle * srolldot
+
+            # Desired orientation:
+            # sweep around pelvis z, then roll about the bat axis.
+            #
+            # Rotating about the bat's own long axis preserves
+            # its horizontal direction.
+            Rd = (
+                Rz
+                @ self.Rstart
+                @ RotAxis(self.bat_axis, phi)
+            )
+
+            wd = (
+                np.array([0.0, 0.0, thetadot])
+                + phidot * (
+                    Rz @ self.Rstart @ self.bat_axis
+                )
+            )
+
+            ##########################################################
+            # INVERSE KINEMATICS
+
+            # Current active joint configuration.
+            qa = self.qc[self.activeindex].copy()
+
+            ptip, Rtip, Jv, Jw = self.chain.fkin(qa)
+            J = np.vstack((Jv, Jw))
+
+            # Task reference velocity with feedback.
+            e = np.concatenate((
+                ep(pd, ptip),
+                eR(Rd, Rtip)
+            ))
+
+            xr = np.concatenate((vd, wd)) + self.lam * e
+
+            # Scaled damped inverse.
+            Jbar = self.Wtask @ J
+            xrbar = self.Wtask @ xr
+
+            A = (
+                Jbar @ Jbar.T
+                + self.gamma**2 * np.eye(6)
+            )
+
+            Jdamp = np.linalg.solve(A, Jbar).T
+
+            # Secondary joint preferences.
+            qpreferred = self.qa_ready.copy()
+            vpreferred = np.zeros(10)
+
+            # Encourage the waist to rotate throughout the swing.
+            qpreferred[0] += theta
+            vpreferred[0] = thetadot
+
+            # Encourage late motion of the wrist-roll joint.
+            qpreferred[7] += self.wrist_roll_change * sroll
+            vpreferred[7] = (
+                self.wrist_roll_change * srolldot
+            )
+
+            qdot_secondary = (
+                vpreferred
+                + self.lam_secondary * (qpreferred - qa)
+            )
+
+            N = np.eye(10) - Jdamp @ Jbar
+
+            qadot = (
+                Jdamp @ xrbar
+                + N @ qdot_secondary
+            )
+
+            # Integrate the active joints.
+            qc = self.qc.copy()
+            qc[self.activeindex] = qa + self.dt * qadot
+
+            # All other joints remain stationary.
+            qcdot = np.zeros(self.N)
+            qcdot[self.activeindex] = qadot
+
+        elif self.t < t4:
+            # Save and hold the actual endpoint reached by IK.
+            if self.qreturn is None:
+                self.qreturn = self.qc.copy()
+
+            qc = self.qreturn.copy()
+            qcdot = np.zeros(self.N)
+
+        elif self.t < t5:
+            # JOINT MOTION:
+            # Return from the actual IK endpoint to the initial pose.
+            if self.qreturn is None:
+                self.qreturn = self.qc.copy()
+
             qc, qcdot = goto(
-                self.t - t2,
+                self.t - t4,
                 self.Treturn,
-                self.qfollow,
+                self.qreturn,
                 self.q0
             )
 
         else:
-            # Hold the final configuration.
+            # Hold the initial configuration.
             qc = self.q0.copy()
             qcdot = np.zeros(self.N)
+
+        ##############################################################
+        # CHECK AND SAVE THE COMMANDED CONFIGURATION.
+
+        if (
+            not np.all(np.isfinite(qc))
+            or np.any(qc < self.qmin)
+            or np.any(qc > self.qmax)
+        ):
+            self.get_logger().error(
+                "Stopping: trajectory exceeded a joint limit "
+                "or produced a nonfinite command."
+            )
+
+            if not self.future.done():
+                self.future.set_result("Invalid joint command")
+            return
+
+        self.qc = qc.copy()
 
         ##############################################################
         # FINISH BY PUBLISHING THE DATA.
