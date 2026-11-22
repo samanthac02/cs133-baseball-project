@@ -18,6 +18,8 @@ from asyncio import Future
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from math               import pi, sin, cos, acos, atan2, sqrt, fmod, exp
+
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
@@ -328,7 +330,7 @@ class TrajectoryNode(Node):
             theta = self.swing_angle * s
             thetadot = self.swing_angle * sdot
 
-            Rz = RotAxis(
+            Rz = Rotn(
                 np.array([0.0, 0.0, 1.0]),
                 theta
             )
@@ -382,7 +384,7 @@ class TrajectoryNode(Node):
             Rd = (
                 Rz
                 @ self.Rstart
-                @ RotAxis(self.bat_axis, phi)
+                @ Rotn(self.bat_axis, phi)
             )
 
             wd = (
