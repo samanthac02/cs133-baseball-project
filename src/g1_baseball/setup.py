@@ -12,6 +12,7 @@ otherfiles = [
         ('share/' + package_name + '/urdf',   glob('urdf/*')),
         ('share/' + package_name + '/orig_unitree', glob('orig_unitree/*')),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
 ]
 
 
