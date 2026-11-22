@@ -1007,7 +1007,7 @@
   <joint name="right_hand_bat_joint" type="fixed">
     <parent link="right_rubber_hand" />
     <child link="baseball_bat" />
-    <origin xyz="0.065 -0.025 0" rpy="0 0 0" />
+    <origin xyz="0.065 0.025 0" rpy="0 0 0" />
   </joint>
   <joint name="bat_tip_joint" type="fixed">
     <parent link="baseball_bat" />
