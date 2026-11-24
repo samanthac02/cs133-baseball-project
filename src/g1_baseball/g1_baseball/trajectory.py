@@ -305,7 +305,7 @@ class TrajectoryNode(Node):
         if self.t < t1:
             # JOINT MOTION:
             # Move from the initial configuration to the ready pose.
-            qc, qcdot = goto(
+            qc, qcdot = goto5(
                 self.t,
                 self.Tready,
                 self.q0,
@@ -323,7 +323,7 @@ class TrajectoryNode(Node):
             t = self.t - t2
 
             # Smooth swing progress from 0 to 1.
-            s, sdot = goto(
+            s, sdot = goto5(
                 t, self.Tswing, 0.0, 1.0
             )
 
@@ -369,7 +369,7 @@ class TrajectoryNode(Node):
                 sroll = 0.0
                 srolldot = 0.0
             else:
-                sroll, srolldot = goto(
+                sroll, srolldot = goto5(
                     troll, Troll, 0.0, 1.0
                 )
 
@@ -470,7 +470,7 @@ class TrajectoryNode(Node):
             if self.qreturn is None:
                 self.qreturn = self.qc.copy()
 
-            qc, qcdot = goto(
+            qc, qcdot = goto5(
                 self.t - t4,
                 self.Treturn,
                 self.qreturn,
