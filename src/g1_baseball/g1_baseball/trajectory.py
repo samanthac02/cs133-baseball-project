@@ -67,7 +67,7 @@ class TrajectoryNode(Node):
         # Define the list of movable joints from the URDF.
         joints = [
             joint for joint in robot.findall('joint')
-            if joint.get('type') in ('revolute', 'continuous')
+            if joint.get('type') in ('revolute', 'continuous', 'prismatic')
         ]
 
         self.jointnames = [
@@ -81,9 +81,14 @@ class TrajectoryNode(Node):
             name: i for i, name in enumerate(self.jointnames)
         }
 
+        self.contact_distance = 0.50    # Location of ball contact on the bat
+        self.slidername = 'bat_tip_joint'
+        self.sliderindex = self.jointindex[self.slidername]
+
         # Define the initial joint configuration.
         # Initial configuration of the full robot.
         self.q0 = np.zeros(self.N)
+        self.q0[self.sliderindex] = self.contact_distance
         self.qc = self.q0.copy()
 
         # Active joints in the pelvis-to-bat kinematic chain.
@@ -106,7 +111,7 @@ class TrajectoryNode(Node):
         ])
 
         self.chain = KinematicChain(
-            self, 'pelvis', 'baseball_bat', self.activenames
+            self, 'pelvis', 'bat_tip', self.activenames + [self.slidername]
         )
 
         # Ready configuration.
@@ -140,47 +145,55 @@ class TrajectoryNode(Node):
             self.qa_ready
         )
 
-        # Assumed long axis of the bat, expressed in its own frame.
-        self.bat_axis = np.array([0.0, 0.0, 1.0])
+        # Phase durations.
+        self.Tready = 3.0
+        self.Tcontact = 3.0
+        self.Tfollow = 2.0
+        self.Thold = 1.0
 
-        # Verify the ready pose is horizontal under that assumption.
-        bat_direction = self.Rstart @ self.bat_axis
+        # Sweep angles to choose initial endpoint pose
+        self.theta_contact = np.radians(70.0)
+        self.theta_finish = np.radians(115.0)
 
-        if abs(bat_direction[2]) > 0.02:
-            raise ValueError(
-                "Ready pose is not horizontal for this robot description. "
-            )
+        # Center of the horizontal swing arc
+        center = np.array([0.0, 0.0, self.pstart[2]])
+        radius = self.pstart - center
 
-        # Center of the horizontal swing arc, expressed in pelvis.
-        # The arc rotates around the pelvis z axis at grip height.
-        self.center = np.array([
-            0.0, 0.0, self.pstart[2]
-        ])
+        Rc = Rotz(self.theta_contact)
+        Rf = Rotz(self.theta_finish)
 
-        self.radius = self.pstart - self.center
+        # initial contact and finish positions
+        self.pcontact = center + Rc @ radius       # CHANGEABLE PARAMETER
+        self.pfinish = center + Rf @ radius
 
-        # Swing parameters.
-        self.swing_angle = np.radians(100.0)
+        self.contact_speed = 0.20
 
-        # A small downward dip in the middle of the swing.
-        self.swing_drop = 0.025
+        # Direction should be tangent to horizontal reference arc
+        direction = np.cross(np.array([0, 0, 1]), self.pcontact - center)
+        direction_norm = np.linalg.norm(direction)
 
-        # Roll the tool orientation around the bat's own long axis.
-        # Negative direction was selected for this starting pose.
-        self.roll_angle = np.radians(-90.0)
+        # Check for 0 radius
+        if direction_norm < 1e-6: 
+            raise ValueError("Can't define contact direction with 0 radius")
 
-        # Secondary preference for the actual wrist-roll joint.
-        self.wrist_roll_change = np.radians(30.0)
+        self.contact_direction = direction / direction_norm
+        self.vcontact = self.contact_speed * self.contact_direction     # CHANGEABLE PARAMETER
 
-        # Damped inverse and feedback parameters.
+        # orientation sweep velocity at contact
+        self.omega_contact = self.contact_speed / np.linalg.norm(radius)
+
+
+        # IK parameters.
         self.lam = 20.0
         self.gamma = 0.05
         self.lam_secondary = 2.0
 
-        # Scale translational rows before computing the damped inverse.
-        self.Wtask = np.diag([
-            1/0.4, 1/0.4, 1/0.4, 1.0, 1.0, 1.0
+        self.Wtask = np.diag([ 
+            1/0.4, 1/0.4, 1/0.4, 1.0, 1.0, 1.0  # CHECK
         ])
+
+        # Secondary task - CHECK
+        self.wrist_yaw_relief = np.radians(10.0)
 
         # Joint limits for checking the commanded configuration.
         self.qmin = np.full(self.N, -np.inf)
@@ -196,20 +209,24 @@ class TrajectoryNode(Node):
             self.qmin[i] = float(limit.get('lower'))
             self.qmax[i] = float(limit.get('upper'))
 
+        # Ensure all joints are within limits
         for q in (self.q0, self.qready):
             if np.any(q < self.qmin) or np.any(q > self.qmax):
                 raise ValueError("Initial or ready pose exceeds joint limits")
 
-        # Phase durations.
-        self.Tready = 3.0
-        self.Tpause = 1.0
-        self.Tswing = 6.0
-        self.Tfinish = 1.0
-        self.Treturn = 4.0
-        self.Thold = 1.0
 
-        # Save the actual IK endpoint before starting the joint return.
-        self.qreturn = None
+        self.qfinish = None
+
+        # log info about chosen contact point and velo
+        self.get_logger().info(
+            "Contact point [pelvis, m]: "
+            + np.array2string(self.pcontact, precision=3)
+        )
+        
+        self.get_logger().info(
+            "Contact velocity [pelvis, m/s]: "
+            + np.array2string(self.vcontact, precision=3)
+        )
 
         ##############################################################
         # SETUP THE LOGISTICS OF THE NODE.
@@ -245,6 +262,17 @@ class TrajectoryNode(Node):
         self.destroy_timer(self.timer)
         self.destroy_node()
 
+    def contact_fkin(self, qa): 
+        '''
+        Helper function
+        The contact point on the bat is modeled as a prismatic joint, however we do not want 
+        that joint to be moved during inverse kinematics so it must be removed from Jacobian
+        '''
+        qchain = np.concatenate((qa, np.array([self.contact_distance])))
+        p, R, Jv, Jw = self.chain.fkin(qchain)
+
+        return p, R, Jv[:, :10], Jw[:, :10] # Only keep the 10 active waist/arm joints in Jacobian
+
     # Update - send a new joint command every time step.
     def update(self):
         # Do not advance the trajectory until the viewer is ready.
@@ -266,13 +294,11 @@ class TrajectoryNode(Node):
         
         # Define the phase boundaries.
         t1 = self.Tready
-        t2 = t1 + self.Tpause
-        t3 = t2 + self.Tswing
-        t4 = t3 + self.Tfinish
-        t5 = t4 + self.Treturn
-        t6 = t5 + self.Thold
+        t2 = t1 + self.Tcontact
+        t3 = t2 + self.Tfollow
+        t4 = t3 + self.Thold
 
-        if self.t > t6:
+        if self.t > t4:
             if not self.future.done():
                 self.future.set_result("Trajectory has ended")
             return
@@ -287,87 +313,32 @@ class TrajectoryNode(Node):
                 self.qready
             )
 
-        elif self.t < t2:
-            # Hold the ready pose before swinging.
-            qc = self.qready.copy()
-            qcdot = np.zeros(self.N)
+        # In case we want a pause 
+        # elif self.t < t2:
+        #     # Hold the ready pose before swinging.
+        #     qc = self.qready.copy()
+        #     qcdot = np.zeros(self.N)
 
         elif self.t < t3:
-            # CARTESIAN MOTION:
-            # Follow the desired bat pose using damped IK.
-            t = self.t - t2
+            # Phase 2 and 3: cartesian swing
+            t = self.t - t1
 
-            # Smooth swing progress from 0 to 1.
-            s, sdot = goto5(
-                t, self.Tswing, 0.0, 1.0
-            )
+            if t < self.Tcontact: 
+                # Phase 2 (ready --> contact)
+                pd, vd = spline5(t, self.Tcontact, self.pstart, self.pcontact, np.zeros(3), self.vcontact, np.zeros(3), np.zeros(3))
+                theta, thetadot = spline5(t, self.Tcontact, 0.0, self.theta_contact, 0.0, self.omega_contact, 0.0, 0.0)
+            else: 
+                # Phase 3 (contact --> follow through)
+                tfollow = t - self.Tcontact
 
-            theta = self.swing_angle * s
-            thetadot = self.swing_angle * sdot
+                pd, vd = spline5(tfollow, self.Tfollow, self.pcontact, self.pfinish, self.vcontact, np.zeros(3), np.zeros(3), np.zeros(3))
+                theta, thetadot = spline5(tfollow, self.Tfollow, self.theta_contact, self.theta_finish, self.omega_contact, 0.0, 0.0, 0.0)
 
-            Rz = Rotn(
-                np.array([0.0, 0.0, 1.0]),
-                theta
-            )
+            theta = float(theta)
+            thetadot = float(thetadot)
 
-            # Desired grip position:
-            # a horizontal arc with a small downward dip.
-            radial = Rz @ self.radius
-
-            pd = (
-                self.center
-                + radial
-                + np.array([
-                    0.0,
-                    0.0,
-                    -self.swing_drop * sin(pi*s)
-                ])
-            )
-
-            vd = (
-                thetadot * np.cross(
-                    np.array([0.0, 0.0, 1.0]),
-                    radial
-                )
-                + np.array([
-                    0.0,
-                    0.0,
-                    -self.swing_drop * pi * cos(pi*s) * sdot
-                ])
-            )
-
-            # Begin the rollover during the final 30% of the swing.
-            troll = t - 0.70 * self.Tswing
-            Troll = 0.30 * self.Tswing
-
-            if troll <= 0.0:
-                sroll = 0.0
-                srolldot = 0.0
-            else:
-                sroll, srolldot = goto5(
-                    troll, Troll, 0.0, 1.0
-                )
-
-            phi = self.roll_angle * sroll
-            phidot = self.roll_angle * srolldot
-
-            # Desired orientation:
-            # sweep around pelvis z, then roll about the bat axis.
-            #
-            # Rotating about the bat's own long axis preserves
-            # its horizontal direction.
-            Rd = (
-                Rz
-                @ self.Rstart
-                @ Rotn(self.bat_axis, phi)
-            )
-
-            wd = (
-                np.array([0.0, 0.0, thetadot])
-                + phidot * (
-                    Rz @ self.Rstart @ self.bat_axis
-                )
-            )
+            Rd = Rotz(theta) @ self.Rstart
+            wd = np.array([0.0, 0.0, thetadot])
 
             ##########################################################
             # INVERSE KINEMATICS
@@ -375,14 +346,11 @@ class TrajectoryNode(Node):
             # Current active joint configuration.
             qa = self.qc[self.activeindex].copy()
 
-            ptip, Rtip, Jv, Jw = self.chain.fkin(qa)
+            ptip, Rtip, Jv, Jw = self.contact_fkin(qa)  # Using defined helper function
             J = np.vstack((Jv, Jw))
 
             # Task reference velocity with feedback.
-            e = np.concatenate((
-                ep(pd, ptip),
-                eR(Rd, Rtip)
-            ))
+            e = np.concatenate((ep(pd, ptip), eR(Rd, Rtip)))
 
             xr = np.concatenate((vd, wd)) + self.lam * e
 
@@ -390,10 +358,7 @@ class TrajectoryNode(Node):
             Jbar = self.Wtask @ J
             xrbar = self.Wtask @ xr
 
-            A = (
-                Jbar @ Jbar.T
-                + self.gamma**2 * np.eye(6)
-            )
+            A = Jbar @ Jbar.T + self.gamma**2 * np.eye(6)
 
             Jdamp = np.linalg.solve(A, Jbar).T
 
@@ -405,23 +370,19 @@ class TrajectoryNode(Node):
             qpreferred[0] += theta
             vpreferred[0] = thetadot
 
-            # Encourage late motion of the wrist-roll joint.
-            qpreferred[7] += self.wrist_roll_change * sroll
-            vpreferred[7] = (
-                self.wrist_roll_change * srolldot
-            )
+            # Move wrist yaw slightly away from its lower limit 
+            fraction = theta / self.theta_finish
+            fractiondot = thetadot / self.theta_finish
 
-            qdot_secondary = (
-                vpreferred
-                + self.lam_secondary * (qpreferred - qa)
-            )
+            # Encourage late motion of the wrist-roll joint.
+            qpreferred[9] += self.wrist_yaw_relief * fraction
+            vpreferred[9] = self.wrist_yaw_relief * fractiondot
+
+            qdot_secondary = vpreferred + self.lam_secondary * (qpreferred - qa)
 
             N = np.eye(10) - Jdamp @ Jbar
 
-            qadot = (
-                Jdamp @ xrbar
-                + N @ qdot_secondary
-            )
+            qadot = Jdamp @ xrbar + N @ qdot_secondary
 
             # Integrate the active joints.
             qc = self.qc.copy()
@@ -431,40 +392,21 @@ class TrajectoryNode(Node):
             qcdot = np.zeros(self.N)
             qcdot[self.activeindex] = qadot
 
-        elif self.t < t4:
-            # Save and hold the actual endpoint reached by IK.
-            if self.qreturn is None:
-                self.qreturn = self.qc.copy()
-
-            qc = self.qreturn.copy()
-            qcdot = np.zeros(self.N)
-
-        elif self.t < t5:
-            # JOINT MOTION:
-            # Return from the actual IK endpoint to the initial pose.
-            if self.qreturn is None:
-                self.qreturn = self.qc.copy()
-
-            qc, qcdot = goto5(
-                self.t - t4,
-                self.Treturn,
-                self.qreturn,
-                self.q0
-            )
-
         else:
-            # Hold the initial configuration.
-            qc = self.q0.copy()
+            # Hold endpoint reached by inverse kinematics for now
+            if self.qfinish is None: 
+                self.qfinish = self.qc.copy()
+
+            qc = self.qfinish.copy()
             qcdot = np.zeros(self.N)
 
-        ##############################################################
-        # CHECK AND SAVE THE COMMANDED CONFIGURATION.
+        # Keep the bat contact position fixed
+        qc[self.sliderindex] = self.contact_distance
+        qcdot[self.sliderindex] = 0.0
 
-        if (
-            not np.all(np.isfinite(qc))
-            or np.any(qc < self.qmin)
-            or np.any(qc > self.qmax)
-        ):
+        # Make sure commanded config is valid - catches edge cases
+
+        if not np.all(np.isfinite(qc)) or np.any(qc < self.qmin) or np.any(qc > self.qmax):
             self.get_logger().error(
                 "Stopping: trajectory exceeded a joint limit "
                 "or produced a nonfinite command."
