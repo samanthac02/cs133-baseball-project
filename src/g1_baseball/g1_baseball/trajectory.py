@@ -133,7 +133,7 @@ class TrajectoryNode(Node):
             0, 
             0, 
             0,
-            90, 
+            0, 
             0,
             0.000000,
         ]))
@@ -145,26 +145,32 @@ class TrajectoryNode(Node):
             self.qa_ready
         )
 
+        # Defining desired bat orientation at contact (want bat to be horizontal)
+        qa_contact_reference = self.qa_ready.copy()
+        qa_contact_reference[7] = np.radians(90.0)
+        p_reference, R_reference, _, _ = self.contact_fkin(qa_contact_reference)
+        _, _, _, Jw_ready = self.contact_fkin(self.qa_ready)    
+        self.roll_axis_local = self.Rstart.T @ Jw_ready[:, 7]
+        self.roll_axis_local /= np.linalg.norm(self.roll_axis_local)
+        self.contact_roll_angle = np.radians(90.0) - self.qa_ready[7]
+
         # Phase durations.
         self.Tready = 3.0
         self.Tcontact = 3.0
-        self.Tfollow = 2.0
+        self.Tfollow = 3.0
         self.Thold = 1.0
 
         # Sweep angles to choose initial endpoint pose
         self.theta_contact = np.radians(70.0)
-        self.theta_finish = np.radians(115.0)
+        self.theta_finish = np.radians(150.0)
 
         # Center of the horizontal swing arc
         center = np.array([0.0, 0.0, self.pstart[2]])
-        radius = self.pstart - center
-
-        Rc = Rotz(self.theta_contact)
-        Rf = Rotz(self.theta_finish)
+        radius = p_reference - center
 
         # initial contact and finish positions
-        self.pcontact = center + Rc @ radius       # CHANGEABLE PARAMETER
-        self.pfinish = center + Rf @ radius
+        self.pcontact = np.array([0.557, -0.445, -0.012]) # center + Rc @ radius       # CHANGEABLE PARAMETER
+        self.pfinish = center + Rotz(self.theta_finish) @ radius
 
         self.contact_speed = 0.20
 
@@ -186,14 +192,30 @@ class TrajectoryNode(Node):
         # IK parameters.
         self.lam = 20.0
         self.gamma = 0.05
-        self.lam_secondary = 2.0
+        # self.lam_secondary = 2.0
 
         self.Wtask = np.diag([ 
             1/0.4, 1/0.4, 1/0.4, 1.0, 1.0, 1.0  # CHECK
         ])
 
-        # Secondary task - CHECK
-        self.wrist_yaw_relief = np.radians(10.0)
+        # # Secondary task - CHECK
+        # self.wrist_yaw_relief = np.radians(10.0)
+
+        # Joint velocity costs (follows same order as active joints): 
+        # Want to discourage leaning and bending
+        self.joint_cost = np.array([
+            1.0, 
+            100.0, 
+            100.0, 
+
+            1.0, 
+            1.0, 
+            1.0, 
+            1.0,
+            0.25, 
+            1.0, 
+            1.0
+        ])
 
         # Joint limits for checking the commanded configuration.
         self.qmin = np.full(self.N, -np.inf)
@@ -327,6 +349,8 @@ class TrajectoryNode(Node):
                 # Phase 2 (ready --> contact)
                 pd, vd = spline5(t, self.Tcontact, self.pstart, self.pcontact, np.zeros(3), self.vcontact, np.zeros(3), np.zeros(3))
                 theta, thetadot = spline5(t, self.Tcontact, 0.0, self.theta_contact, 0.0, self.omega_contact, 0.0, 0.0)
+
+                beta, betadot = goto5(t, self.Tcontact, 0.0, self.contact_roll_angle)
             else: 
                 # Phase 3 (contact --> follow through)
                 tfollow = t - self.Tcontact
@@ -334,11 +358,15 @@ class TrajectoryNode(Node):
                 pd, vd = spline5(tfollow, self.Tfollow, self.pcontact, self.pfinish, self.vcontact, np.zeros(3), np.zeros(3), np.zeros(3))
                 theta, thetadot = spline5(tfollow, self.Tfollow, self.theta_contact, self.theta_finish, self.omega_contact, 0.0, 0.0, 0.0)
 
+                # Keep tilt during follow through
+                beta = self.contact_roll_angle
+                betadot = 0.0
+
             theta = float(theta)
             thetadot = float(thetadot)
 
-            Rd = Rotz(theta) @ self.Rstart
-            wd = np.array([0.0, 0.0, thetadot])
+            Rd = Rotz(theta) @ self.Rstart @ Rotn(self.roll_axis_local, beta)
+            wd = np.array([0.0, 0.0, thetadot]) + betadot * (Rotz(theta) @ self.Rstart @ self.roll_axis_local)
 
             ##########################################################
             # INVERSE KINEMATICS
@@ -360,29 +388,33 @@ class TrajectoryNode(Node):
 
             A = Jbar @ Jbar.T + self.gamma**2 * np.eye(6)
 
-            Jdamp = np.linalg.solve(A, Jbar).T
+            Jdamp = np.linalg.solve(A, Jbar @ self.mobility).T
 
-            # Secondary joint preferences.
-            qpreferred = self.qa_ready.copy()
-            vpreferred = np.zeros(10)
+            # SEE BELOW FOR WHEN WE NEED SECONDARY TASKS
+            # # Secondary joint preferences.
+            # qpreferred = self.qa_ready.copy()
+            # vpreferred = np.zeros(10)
 
-            # Encourage the waist to rotate throughout the swing.
-            qpreferred[0] += theta
-            vpreferred[0] = thetadot
+            # # Encourage the waist to rotate throughout the swing.
+            # qpreferred[0] += theta
+            # vpreferred[0] = thetadot
 
-            # Move wrist yaw slightly away from its lower limit 
-            fraction = theta / self.theta_finish
-            fractiondot = thetadot / self.theta_finish
+            # # Move wrist yaw slightly away from its lower limit 
+            # fraction = theta / self.theta_finish
+            # fractiondot = thetadot / self.theta_finish
 
-            # Encourage late motion of the wrist-roll joint.
-            qpreferred[9] += self.wrist_yaw_relief * fraction
-            vpreferred[9] = self.wrist_yaw_relief * fractiondot
+            # # Encourage late motion of the wrist-roll joint.
+            # qpreferred[9] += self.wrist_yaw_relief * fraction
+            # vpreferred[9] = self.wrist_yaw_relief * fractiondot
 
-            qdot_secondary = vpreferred + self.lam_secondary * (qpreferred - qa)
+            # qdot_secondary = vpreferred + self.lam_secondary * (qpreferred - qa)
 
-            N = np.eye(10) - Jdamp @ Jbar
+            # N = np.eye(10) - Jdamp @ Jbar
 
-            qadot = Jdamp @ xrbar + N @ qdot_secondary
+            # qadot = Jdamp @ xrbar + N @ qdot_secondary
+
+
+            qadot = Jdamp @ xrbar
 
             # Integrate the active joints.
             qc = self.qc.copy()
