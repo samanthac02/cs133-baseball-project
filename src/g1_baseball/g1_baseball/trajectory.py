@@ -129,19 +129,19 @@ class TrajectoryNode(Node):
             7.283509,
             8.548961,
 
-            -88.073999,
-            -19.888281,
-            19.210660,
-            119.492473,
-            -30.540658,
-            30.441813,
-            90.000000,
+            0,
+            0, 
+            0, 
+            0,
+            90, 
+            0,
+            0.000000,
         ]))
 
         # Compute the matched starting pose for the Cartesian swing.
         self.qa_ready = self.qready[self.activeindex].copy()
 
-        self.pstart, self.Rstart, _, _ = self.chain.fkin(
+        self.pstart, self.Rstart, _, _ = self.contact_fkin(
             self.qa_ready
         )
 
