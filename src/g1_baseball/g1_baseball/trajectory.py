@@ -30,24 +30,6 @@ from utils.TransformHelpers import *
 from utils.TrajectoryUtils import *
 
 
-#
-# Trajectory Utility
-#
-# Same calling pattern as the homework goto().
-# This version uses a quintic spline with zero initial/final
-# velocity and acceleration. Works with scalars or NumPy arrays.
-#
-def goto(t, T, p0, pf):
-    u = np.clip(t / T, 0.0, 1.0)
-
-    s = 10*u**3 - 15*u**4 + 6*u**5
-    sdot = (30*u**2 - 60*u**3 + 30*u**4) / T
-
-    p = p0 + (pf - p0) * s
-    v = (pf - p0) * sdot
-
-    return (p, v)
-
 
 #
 # Trajectory Generator Node Class
