@@ -65,7 +65,6 @@ class TrajectoryNode(Node):
         robot = ET.parse(urdf_file).getroot()
 
         # Define the list of movable joints from the URDF.
-        # Publish ALL joints, including the stationary legs/left arm.
         joints = [
             joint for joint in robot.findall('joint')
             if joint.get('type') in ('revolute', 'continuous')
@@ -88,7 +87,6 @@ class TrajectoryNode(Node):
         self.qc = self.q0.copy()
 
         # Active joints in the pelvis-to-bat kinematic chain.
-        # The order must match the order along the chain.
         self.activenames = [
             'waist_yaw_joint',
             'waist_roll_joint',
@@ -113,9 +111,6 @@ class TrajectoryNode(Node):
 
         # Ready configuration.
         #
-        # This pose was computed using the supplied URDF so that the
-        # bat link's local z axis is approximately horizontal, while
-        # the right wrist yaw starts at 90 degrees.
         #
         # Active joint order:
         # waist yaw/roll/pitch,
@@ -154,7 +149,6 @@ class TrajectoryNode(Node):
         if abs(bat_direction[2]) > 0.02:
             raise ValueError(
                 "Ready pose is not horizontal for this robot description. "
-                "Check the bat attachment rotation and bat-axis definition."
             )
 
         # Center of the horizontal swing arc, expressed in pelvis.
@@ -176,7 +170,6 @@ class TrajectoryNode(Node):
         self.roll_angle = np.radians(-90.0)
 
         # Secondary preference for the actual wrist-roll joint.
-        # This is a preference, not an enforced joint trajectory.
         self.wrist_roll_change = np.radians(30.0)
 
         # Damped inverse and feedback parameters.
@@ -234,12 +227,12 @@ class TrajectoryNode(Node):
             "Waiting for a /joint_states subscriber..."
         )
 
-        # Set up the timer to update at 100 Hz.
-        self.dt = 0.01
-        self.t = -self.dt
-
+        # Set up the timer to update at 100 Hz, with (t=0)) occuring in
+        # the first update cycle (dt) from now.
+        self.dt = 0.01                      # 100Hz
+        self.t = -self.dt                   # Seconds since start
+        self.now = self.get_clock().now()   # ROS time since 1970
         self.timer = self.create_timer(self.dt, self.update)
-
         self.get_logger().info(
             "Running with dt of %f seconds (%fHz)"
             % (self.dt, 1/self.dt)
