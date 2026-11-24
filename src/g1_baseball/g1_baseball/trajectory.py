@@ -169,7 +169,7 @@ class TrajectoryNode(Node):
         radius = p_reference - center
 
         # initial contact and finish positions
-        self.pcontact = np.array([0.557, -0.445, -0.012]) # center + Rc @ radius       # CHANGEABLE PARAMETER
+        self.pcontact = np.array([0.757, -0.445, -0.012]) # center + Rc @ radius       # CHANGEABLE PARAMETER
         self.pfinish = center + Rotz(self.theta_finish) @ radius
 
         self.contact_speed = 0.20
@@ -216,6 +216,8 @@ class TrajectoryNode(Node):
             1.0, 
             1.0
         ])
+        
+        self.mobility = np.diag (1.0 / self.joint_cost)
 
         # Joint limits for checking the commanded configuration.
         self.qmin = np.full(self.N, -np.inf)
