@@ -1021,7 +1021,7 @@
 <joint name="left_grip_joint" type="fixed">
   <parent link="left_rubber_hand" />
   <child link="left_grip" />
-  <origin xyz="0.065 0.025 0" rpy="0 0 0" />
+  <origin xyz="0.065 -0.025 0" rpy="0 0 0" />
 </joint>
 <link name="left_grasp_target" />
 <joint name="left_grasp_target_joint" type="fixed">

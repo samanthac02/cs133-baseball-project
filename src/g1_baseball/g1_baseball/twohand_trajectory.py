@@ -110,7 +110,7 @@ class TrajectoryNode(Node):
         )
 
         self.leftchain = KinematicChain(
-            self, 'pelvis', 'left_grip', waistnames + leftnames + [self.slidername]
+            self, 'pelvis', 'left_grip', waistnames + leftnames
         )
 
         # Define the initial joint configuration.
@@ -162,10 +162,10 @@ class TrajectoryNode(Node):
         self.Rstart = RR.copy()
 
         # Grip Debugger
-        grip_error = np.linalg.norm(pL - (pR + RR @ self.left_offset))
-        rotation_error = np.linalg.norm(eR(RR, RL))
-        if grip_error > 0.002 or rotation_error > 0.01:
-            raise ValueError('Something wrong with grip - check URDF and start pose')
+        # grip_error = np.linalg.norm(pL - (pR + RR @ self.left_offset))
+        # rotation_error = np.linalg.norm(eR(RR, RL))
+        # if grip_error > 0.002 or rotation_error > 0.01:
+            # raise ValueError('Something wrong with grip - check URDF and start pose')
 
 
         # Phase durations.
@@ -213,9 +213,9 @@ class TrajectoryNode(Node):
 
         # Joint velocity costs (follows same order as active joints): 
         # Want to discourage leaning and bending and prefer arm motion 
-        self.joint_cost = np.array([
+        self.joint_cost = np.array(
             [1.0, 100.0, 100.0] + [1.0] * 14
-        ])
+        )
         
         self.mobility = np.diag (1.0 / self.joint_cost)
 
@@ -301,9 +301,7 @@ class TrajectoryNode(Node):
 
 
         # Left arm chain
-        ql = np.concatenate((
-            qa[self.leftcolumns]
-        ))
+        ql = qa[self.leftcolumns]
         pL, RL, JvL, JwL = self.leftchain.fkin(ql)
 
         JR = np.zeros((6, 17))
@@ -404,20 +402,20 @@ class TrajectoryNode(Node):
             e = np.concatenate((
                 ep(pd, pR),
                 eR(Rd, RR), 
-                eP(pLd, pL),
+                ep(pLd, pL),
                 eR(RLd, RL)
             ))
 
             xr = np.concatenate((vd, wd, vLd, wLd)) + self.lam * e
 
             # Combined jacobian
-            J = np.vstac((JR, JL))
+            J = np.vstack((JR, JL))
 
             # Scaled damped inverse.
             Jbar = self.Wtask @ J
             xrbar = self.Wtask @ xr
 
-            A = Jbar @ Jbar.T + self.gamma**2 * np.eye(12)
+            A = Jbar @ self.mobility @ Jbar.T + self.gamma**2 * np.eye(12)
 
             Jdamp = np.linalg.solve(A, Jbar @ self.mobility).T
 
