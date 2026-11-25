@@ -132,26 +132,38 @@ class TrajectoryNode(Node):
 
         # Initial position before swing (CHANGE)
         self.qready[self.activeindex] = np.radians(np.array([
+            # Waist
             -30.000000,
             0.000000,
             0.000000,
 
-            -18.241866,
-            47.989218,
-            -12.668237,
-            55.614555,
-            37.844100,
-            -9.818378,
-            27.550576,
+            # Right arm
+            -14.175005,  
+            9.994270,   
+            45.078037,  
+            23.156242,   
+            101.012233,  
+            -48.929486,   
+            10.483471,    
 
-            12.978320,
-            24.388031,
-            -30.134193,
-            -25.957338,
-            79.698408,
-            62.724505,
-            -4.417448,
+            # Left arm
+            -0.655772,  
+            -2.636739, 
+            -22.975933, 
+            -7.694141,    
+            96.101212, 
+            22.539381,    
+            -10.069480,    
         ]))
+
+        # Intermediate pose between gripping bat and loading
+        self.waistindex = np.array([
+            self.jointindex['waist_yaw_joint'],
+            self.jointindex['waist_roll_joint'],
+            self.jointindex['waist_pitch_joint'],
+        ])
+        self.qgrip = self.qready.copy()
+        self.qgrip[self.waistindex] = self.q0[self.waistindex]
 
         # Compute the matched starting pose for the Cartesian swing.
         self.qa_ready = self.qready[self.activeindex].copy()
@@ -169,7 +181,9 @@ class TrajectoryNode(Node):
 
 
         # Phase durations.
-        self.Tready = 4.0
+        self.Tgrip = 4.0
+        self.Tload = 3.0
+        self.Tready = self.Tgrip + self.Tload
         self.Tcontact = 3.0
         self.Tfollow = 3.0
         self.Thold = 1.0
@@ -234,7 +248,7 @@ class TrajectoryNode(Node):
             self.qmax[i] = float(limit.get('upper'))
 
         # Ensure all joints are within limits
-        for q in (self.q0, self.qready):
+        for q in (self.q0, self.qgrip, self.qready):
             if np.any(q < self.qmin) or np.any(q > self.qmax):
                 raise ValueError("Initial or ready pose exceeds joint limits")
 
@@ -348,12 +362,13 @@ class TrajectoryNode(Node):
         if self.t < t1:
             # JOINT MOTION:
             # Move from the initial configuration to the ready pose.
-            qc, qcdot = goto5(
-                self.t,
-                self.Tready,
-                self.q0,
-                self.qready
-            )
+            if self.t < self.Tgrip: 
+                # Grip bat with both hands
+                qc, qcdot = goto5(self.t, self.Tgrip, self.q0, self.qgrip)
+            else: 
+                # Load
+                qc, qcdot = goto5(self.t, self.Tready, self.qgrip, self.qready)
+
 
         # In case we want a pause 
         # elif self.t < t2:
