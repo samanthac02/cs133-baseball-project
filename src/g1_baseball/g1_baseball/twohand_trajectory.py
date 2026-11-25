@@ -189,8 +189,8 @@ class TrajectoryNode(Node):
         self.Thold = 1.0
 
         # Sweep angles to choose initial endpoint pose
-        self.theta_contact = np.radians(40.0)
-        self.theta_finish = np.radians(70.0)
+        self.theta_contact = np.radians(70.0)
+        self.theta_finish = np.radians(150.0)
 
         # Center of the horizontal swing arc
         center = np.array([0.0, 0.0, self.pstart[2]])
