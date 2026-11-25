@@ -1,9 +1,7 @@
 '''
 trajectory.py
 
-First trajectory generator for the G1 baseball project.
-Moves from an initial configuration to a ready pose, performs
-a slow demonstration sweep, and returns.
+One-handed swing
 
 Node:    /trajectory
 Publish: /joint_states    sensor_msgs/JointState

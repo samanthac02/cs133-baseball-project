@@ -34,6 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'trajectory = g1_baseball.trajectory:main',
+            'twohand_trajectory = gq_baseball.twohand_trajectory:main'
         ],
     },
 )

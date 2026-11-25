@@ -1016,4 +1016,17 @@
     <limit lower = "0.0" upper = "0.609599975586" effort = "1.0" velocity = "1.0" />
   </joint>
   <link name="bat_tip" />
+  <!-- Reference point where the left hand grips the handle. -->
+<link name="left_grip" />
+<joint name="left_grip_joint" type="fixed">
+  <parent link="left_rubber_hand" />
+  <child link="left_grip" />
+  <origin xyz="0.065 0.025 0" rpy="0 0 0" />
+</joint>
+<link name="left_grasp_target" />
+<joint name="left_grasp_target_joint" type="fixed">
+  <parent link="baseball_bat" />
+  <child link="left_grasp_target" />
+  <origin xyz="0 0 -0.08" rpy="0 0 0" />
+</joint>
 </robot>

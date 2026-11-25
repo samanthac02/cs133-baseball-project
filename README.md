@@ -6,6 +6,7 @@
 3. Connected the bat to the G1's right hand in the URDF (with a small offset that I determined by visually looking at the viewer)
 
 # Build
+```sh
 cd ~/robotws/cs133-baseball-project
 
 source /opt/ros/jazzy/setup.bash
@@ -13,14 +14,28 @@ source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 
 source install/setup.bash
+```
 
 ## To view robot URDF only
 
+```sh
 ros2 launch utils viewurdf.launch.py urdf:="$PWD/src/g1_baseball/urdf/g1_baseball.urdf"
+```
 
 ## To view swing trajectory
 
+```sh
 ros2 launch g1_baseball display.launch.py
+```
 
+### One handed swing
+
+```sh
 ros2 launch g1_baseball trajectory
+```
 
+### Two handed swing
+
+```sh
+ros2 launch g1_baseball twohand_trajectory
+```
